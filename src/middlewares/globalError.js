@@ -1,6 +1,7 @@
 // src/middlewares/globalError.js
 
 import AppError from "../utils/AppError.js";
+import { env } from "../config/env.js";
 
 // Express error middleware signature: (err, req, res, next)
 export const globalError = (err, req, res, next) => {
@@ -31,9 +32,13 @@ export const globalError = (err, req, res, next) => {
   if (err.name === "JsonWebTokenError") err = new AppError("Invalid token", 401);
   if (err.name === "TokenExpiredError") err = new AppError("Token expired", 401);
 
+  const code = err.statusCode || statusCode;
+  const exposeDetails =
+    !env.isProduction || err.isOperational || (code >= 400 && code < 500);
+
   // final response
-  res.status(err.statusCode || statusCode).json({
+  res.status(code).json({
     status: err.status || status,
-    message: err.message || "Something went wrong",
+    message: exposeDetails ? err.message || "Something went wrong" : "Something went wrong",
   });
 };

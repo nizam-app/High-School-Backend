@@ -9,7 +9,7 @@ export const s3Config = {
   accessKeyId: normalize(process.env.AWS_ACCESS_KEY_ID),
   secretAccessKey: normalize(process.env.AWS_SECRET_ACCESS_KEY),
 };
-console.log("S3 Config:", s3Config.region);
+
 const hasCredentials =
   s3Config.region &&
   s3Config.bucket &&

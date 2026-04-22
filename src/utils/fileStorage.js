@@ -5,7 +5,6 @@ const baseUploadsUrl = () => {
   if (publicBase) return `${publicBase}/uploads`;
   return "/uploads";
 };
-console.log("Base Uploads URL:", process.env.PUBLIC_BASE_URL);
 
 export const buildStoredFileMeta = (file, folderName = "general") => {
   if (!file) return null;

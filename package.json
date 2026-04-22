@@ -1,7 +1,10 @@
 {
-  "name": "my-code-structure",
+  "name": "high-school-management-backend",
   "version": "1.0.0",
   "type": "module",
+  "engines": {
+    "node": ">=18.18.0"
+  },
   "scripts": {
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
@@ -15,6 +18,8 @@
     "cors": "^2",
     "dotenv": "^16",
     "express": "^4",
+    "express-rate-limit": "^8.3.2",
+    "helmet": "^8.1.0",
     "ioredis": "^5.10.0",
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^8",
@@ -23,8 +28,8 @@
     "node-cron": "^4.2.1",
     "qrcode": "^1.5.4",
     "redis": "^5.11.0",
-    "speakeasy": "^2.0.0",
-    "socket.io": "^4.8.3"
+    "socket.io": "^4.8.3",
+    "speakeasy": "^2.0.0"
   },
   "devDependencies": {
     "nodemon": "^3"

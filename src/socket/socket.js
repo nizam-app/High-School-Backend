@@ -9,11 +9,15 @@ export const ADMINS_ROOM = "admins";
 export const initSocket = (httpServer, corsOrigin = "*") => {
   if (ioInstance) return ioInstance;
 
+  const allowAnyOrigin =
+    corsOrigin === "*" ||
+    (Array.isArray(corsOrigin) && corsOrigin.length === 1 && corsOrigin[0] === "*");
+
   ioInstance = new Server(httpServer, {
     cors: {
       origin: corsOrigin,
       methods: ["GET", "POST", "PATCH"],
-      credentials: true,
+      credentials: !allowAnyOrigin,
     },
   });
 
@@ -39,6 +43,14 @@ export const initSocket = (httpServer, corsOrigin = "*") => {
 };
 
 export const getIo = () => ioInstance;
+
+export const closeSocketServer = () =>
+  new Promise((resolve) => {
+    if (!ioInstance) return resolve();
+    const io = ioInstance;
+    ioInstance = null;
+    io.close(() => resolve());
+  });
 
 export const emitToUser = (userId, eventName, payload) => {
   if (!ioInstance) return;

@@ -692,15 +692,20 @@ export const processDueScheduledNotifications = async () => {
   }
 };
 
-let notificationScheduleStarted = false;
+let notificationScheduleCronTask = null;
 
 export const startNotificationScheduleCron = () => {
-  if (notificationScheduleStarted) return;
-  notificationScheduleStarted = true;
-
-  cron.schedule("*/1 * * * *", () => {
+  if (notificationScheduleCronTask) return;
+  notificationScheduleCronTask = cron.schedule("*/1 * * * *", () => {
     processDueScheduledNotifications().catch((error) => {
       console.error("notificationScheduleCronError", error);
     });
   });
+};
+
+export const stopNotificationScheduleCron = () => {
+  if (notificationScheduleCronTask) {
+    notificationScheduleCronTask.stop();
+    notificationScheduleCronTask = null;
+  }
 };

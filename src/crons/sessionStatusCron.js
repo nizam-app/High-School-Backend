@@ -90,15 +90,25 @@ export const runSessionStatusUpdate = async () => {
   }
 };
 
+let sessionCronTask = null;
+
 export const startSessionStatusCron = () => {
-  cron.schedule("* * * * *", async () => {
+  if (sessionCronTask) return sessionCronTask;
+  sessionCronTask = cron.schedule("* * * * *", async () => {
     try {
       await runSessionStatusUpdate();
     } catch (err) {
       console.error("[session-cron] Unhandled error:", err);
     }
   });
-
   console.log("[session-cron] Session status updater scheduled (every minute)");
+  return sessionCronTask;
+};
+
+export const stopSessionStatusCron = () => {
+  if (sessionCronTask) {
+    sessionCronTask.stop();
+    sessionCronTask = null;
+  }
 };
 

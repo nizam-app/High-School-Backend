@@ -14,17 +14,47 @@ const toBool = (value, fallback = false) => {
 };
 
 const nodeEnv = String(process.env.NODE_ENV || "development").trim().toLowerCase();
+const isProduction = nodeEnv === "production";
 const includeTestByEnv = nodeEnv === "staging" || nodeEnv === "uat";
+
+const parseTrustProxy = () => {
+  const raw = process.env.TRUST_PROXY;
+  if (raw === undefined || raw === null || raw === "") return false;
+  const s = String(raw).trim().toLowerCase();
+  if (s === "true" || s === "1" || s === "yes") return 1;
+  const n = Number(raw);
+  if (Number.isFinite(n) && n > 0) return n;
+  return false;
+};
+
+const jwtSecret = required("JWT_SECRET");
+if (isProduction && jwtSecret.length < 32) {
+  throw new Error(
+    "JWT_SECRET must be at least 32 characters in production (use a strong random string)."
+  );
+}
+
+const corsOrigin = process.env.CORS_ORIGIN || "*";
+if (isProduction && corsOrigin.trim() === "*") {
+  console.warn(
+    "[env] CORS_ORIGIN is \"*\" in production. Set explicit origins (comma-separated) if clients use credentials."
+  );
+}
 
 const env = {
   NODE_ENV: nodeEnv,
+  isProduction,
   PORT: Number(process.env.PORT) || 5000,
   MONGODB_URL: required("MONGODB_URL"),
-  JWT_SECRET: required("JWT_SECRET"),
+  JWT_SECRET: jwtSecret,
   JWT_ACCESS_EXPIRES_IN: required("JWT_ACCESS_EXPIRES_IN"),
   APP_NAME: process.env.APP_NAME || "Online High School",
   HOST: process.env.HOST || "0.0.0.0",
-  CORS_ORIGIN: process.env.CORS_ORIGIN || "*",
+  CORS_ORIGIN: corsOrigin,
+  TRUST_PROXY: parseTrustProxy(),
+  JSON_BODY_LIMIT: process.env.JSON_BODY_LIMIT || "1mb",
+  API_RATE_LIMIT_WINDOW_MS: Number(process.env.API_RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000,
+  API_RATE_LIMIT_MAX: Number(process.env.API_RATE_LIMIT_MAX) || (isProduction ? 2000 : 10000),
   REDIS_URL: process.env.REDIS_URL || "redis://127.0.0.1:6379",
   OTP_TTL_SECONDS: Number(process.env.OTP_TTL_SECONDS) || 300,
   OTP_MAX_VERIFY_ATTEMPTS: Number(process.env.OTP_MAX_VERIFY_ATTEMPTS) || 5,
@@ -49,5 +79,5 @@ const env = {
   TWO_FACTOR_LOCK_MINUTES: Number(process.env.TWO_FACTOR_LOCK_MINUTES) || 10,
 };
 
-export default env;      
-export { env };          
+export default env;
+export { env };
