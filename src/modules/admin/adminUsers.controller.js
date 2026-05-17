@@ -12,6 +12,15 @@ export const getUsers = catchAsync(async (req, res) => {
   });
 });
 
+export const getCreateUserMeta = catchAsync(async (req, res) => {
+  const data = await adminUsersService.getCreateUserMeta();
+  return sendResponse(res, {
+    statusCode: 200,
+    message: "Create user metadata fetched",
+    data,
+  });
+});
+
 export const getUsersStats = catchAsync(async (req, res) => {
   const data = await adminUsersService.getAdminUsersStats();
   return sendResponse(res, {
@@ -43,6 +52,19 @@ export const updateUser = catchAsync(async (req, res) => {
   return sendResponse(res, {
     statusCode: 200,
     message: "Admin user updated successfully",
+    data,
+  });
+});
+
+export const resetUserPin = catchAsync(async (req, res) => {
+  const data = await adminUsersService.resetAdminUserPin({
+    userId: req.params.id,
+    pin: req.body?.pin,
+  });
+
+  return sendResponse(res, {
+    statusCode: 200,
+    message: "User PIN reset successfully",
     data,
   });
 });

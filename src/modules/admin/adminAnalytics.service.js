@@ -436,13 +436,9 @@ export const getAdminAnalyticsOverview = async (query = {}) => {
 
   const gradeLabels = Array.from(
     new Set(
-      [
-        ...(Array.isArray(gradesAgg) ? gradesAgg.map((g) => String(g?.label || "").trim()) : []),
-        "4th",
-        "5th",
-        "6th",
-        "7th",
-      ].filter(Boolean)
+      (Array.isArray(gradesAgg) ? gradesAgg.map((g) => String(g?.label || "").trim()) : []).filter(
+        Boolean
+      )
     )
   );
 

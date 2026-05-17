@@ -23,8 +23,8 @@ const classSchema = new mongoose.Schema(
 
     gradeLevel: {
       type: String,
-      enum: ["4th", "5th", "6th", "7th"],
       required: true,
+      trim: true,
     },
     gradeId: { type: mongoose.Schema.Types.ObjectId, ref: "Grade", default: null },
 

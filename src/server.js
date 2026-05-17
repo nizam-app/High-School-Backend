@@ -123,7 +123,8 @@ process.once("SIGTERM", () => void gracefulShutdown("SIGTERM"));
 const start = async () => {
   try {
     await connectDB();
-    await connectRedis();
+    // OTP flow disabled — Redis used for OTP signup/session state
+    // await connectRedis();
     await Class.syncIndexes();
     await Grade.syncIndexes();
     await Lesson.syncIndexes();

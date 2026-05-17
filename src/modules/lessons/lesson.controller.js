@@ -6,6 +6,10 @@ import * as lessonService from "./lesson.service.js";
 import Grade from "../grade/grade.model.js";
 import Subject from "../subject/subject.model.js";
 import mongoose from "mongoose";
+import {
+  buildStudentLessonScopePairs,
+  studentCanAccessLessonScope,
+} from "../../utils/studentClassAccess.js";
 
 const norm = (v) => String(v || "").trim().toLowerCase();
 const toObjectId = (value, fieldName) => {
@@ -107,32 +111,32 @@ export const getScopedLessons = catchAsync(async (req, res) => {
   }
 
   if (req.user.role === "student") {
-    const studentGrade = await Grade.findOne({ label: req.user.gradeLevel }).select("_id label").lean();
-    if (!studentGrade) throw new AppError("Student grade not found", 400);
+    const scopePairs = await buildStudentLessonScopePairs(req.user, req.user._id);
+    if (!scopePairs.length) return res.json({ success: true, data: [] });
 
-    if (gradeId && String(studentGrade._id) !== String(gradeId)) {
-      throw new AppError("This grade is not for you", 403);
-    }
-    filter.gradeId = studentGrade._id;
-
-    const assignedSubjectNames = Array.isArray(req.user.assignedSubjects) ? req.user.assignedSubjects : [];
-    const normalizedAssigned = assignedSubjectNames.map(norm);
-    const assignedSubjects = await Subject.find({})
-      .select("_id name")
-      .lean();
-    const assignedSubjectIds = assignedSubjects
-      .filter((s) => normalizedAssigned.includes(norm(s.name)))
-      .map((s) => String(s._id));
-
-    if (subjectId) {
-      if (!assignedSubjectIds.includes(String(subjectId))) {
-        throw new AppError("You are not assigned to this subject", 403);
-      }
+    if (gradeId && subjectId) {
+      const allowed = scopePairs.some(
+        (p) => String(p.gradeId) === String(gradeId) && String(p.subjectId) === String(subjectId)
+      );
+      if (!allowed) throw new AppError("You are not assigned to this class", 403);
+      filter.gradeId = gradeId;
       filter.subjectId = subjectId;
-    } else if (assignedSubjectIds.length) {
-      filter.subjectId = { $in: assignedSubjectIds };
+    } else if (gradeId) {
+      const subjectIdsForGrade = scopePairs
+        .filter((p) => String(p.gradeId) === String(gradeId))
+        .map((p) => p.subjectId);
+      if (!subjectIdsForGrade.length) throw new AppError("You are not assigned to this grade", 403);
+      filter.gradeId = gradeId;
+      filter.subjectId = { $in: subjectIdsForGrade };
+    } else if (subjectId) {
+      const gradeIdsForSubject = scopePairs
+        .filter((p) => String(p.subjectId) === String(subjectId))
+        .map((p) => p.gradeId);
+      if (!gradeIdsForSubject.length) throw new AppError("You are not assigned to this subject", 403);
+      filter.subjectId = subjectId;
+      filter.gradeId = gradeIdsForSubject.length > 1 ? { $in: gradeIdsForSubject } : gradeIdsForSubject[0];
     } else {
-      return res.json({ success: true, data: [] });
+      filter.$or = scopePairs.map((p) => ({ gradeId: p.gradeId, subjectId: p.subjectId }));
     }
 
     const data = await Lesson.find({ ...filter, status: "published" })
@@ -194,9 +198,10 @@ export const getLessonById = catchAsync(async (req, res) => {
 
   if (req.user.role === "student") {
     if (lesson.status !== "published") throw new AppError("Lesson not available", 403);
-    if (norm(req.user.gradeLevel) !== norm(grade.label)) throw new AppError("Forbidden", 403);
-    const subjects = Array.isArray(req.user.assignedSubjects) ? req.user.assignedSubjects : [];
-    if (!subjects.map(norm).includes(norm(subject.name))) throw new AppError("Forbidden", 403);
+    const scopePairs = await buildStudentLessonScopePairs(req.user, req.user._id);
+    if (!studentCanAccessLessonScope(lesson, scopePairs)) {
+      throw new AppError("Lesson not available for your assigned classes", 403);
+    }
     return res.json({ success: true, data: lesson });
   }
 

@@ -2,9 +2,12 @@ import mongoose from "mongoose";
 import { Grade } from "../modules/grade/grade.model.js";
 import { Subject } from "../modules/subject/subject.model.js";
 import AppError from "./AppError.js";
+import { GRADE_NOT_FOUND_MESSAGE } from "./gradeValidation.js";
 
 const toStr = (v) => String(v || "").trim();
 const toArray = (v) => (Array.isArray(v) ? v : []);
+
+const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 const uniqByKey = (items, getKey) => {
   const out = [];
@@ -18,12 +21,28 @@ const uniqByKey = (items, getKey) => {
   return out;
 };
 
-const findGradeById = async (gradeId) => {
+const findGradeById = async (gradeId, { requireActive = true } = {}) => {
   const id = toStr(gradeId);
   if (!id) return null;
-  if (!mongoose.Types.ObjectId.isValid(id)) throw new AppError("Invalid gradeId", 400);
+  if (!mongoose.Types.ObjectId.isValid(id)) return null;
   const grade = await Grade.findById(id).lean();
-  if (!grade) throw new AppError("gradeId not found", 400);
+  if (!grade) throw new AppError(GRADE_NOT_FOUND_MESSAGE, 400);
+  if (requireActive && grade.isActive === false) {
+    throw new AppError(`Grade is inactive: ${grade.label}`, 400);
+  }
+  return grade;
+};
+
+const findGradeByLabel = async (label, { requireActive = true } = {}) => {
+  const normalized = toStr(label);
+  if (!normalized) return null;
+  const grade = await Grade.findOne({
+    label: { $regex: new RegExp(`^${escapeRegex(normalized)}$`, "i") },
+  }).lean();
+  if (!grade) throw new AppError(GRADE_NOT_FOUND_MESSAGE, 400);
+  if (requireActive && grade.isActive === false) {
+    throw new AppError(`Grade is inactive: ${normalized}`, 400);
+  }
   return grade;
 };
 
@@ -37,8 +56,14 @@ const findSubjectById = async (subjectId) => {
 };
 
 export const resolveGradeRef = async ({ gradeId, gradeLevel, required = false } = {}) => {
-  const id = toStr(gradeId);
-  const labelInput = toStr(gradeLevel);
+  let id = toStr(gradeId);
+  let labelInput = toStr(gradeLevel);
+
+  // UI may send grade label in gradeId when value is not a Mongo ObjectId
+  if (id && !mongoose.Types.ObjectId.isValid(id)) {
+    if (!labelInput) labelInput = id;
+    id = "";
+  }
 
   if (!id && !labelInput) {
     if (required) throw new AppError("Grade is required", 400);
@@ -58,11 +83,8 @@ export const resolveGradeRef = async ({ gradeId, gradeLevel, required = false } 
     return { gradeId: null, gradeLevel: "" };
   }
 
-  const gradeByLabel = await Grade.findOne({ label: labelInput }).lean();
-  return {
-    gradeId: gradeByLabel?._id || null,
-    gradeLevel: labelInput,
-  };
+  const gradeByLabel = await findGradeByLabel(labelInput);
+  return { gradeId: gradeByLabel._id, gradeLevel: gradeByLabel.label };
 };
 
 export const resolveSubjectRef = async ({ subjectId, subject, required = false } = {}) => {
@@ -106,8 +128,8 @@ export const resolveGradeRefs = async ({ gradeIds, gradeLevels } = {}) => {
 
   const fromLabels = [];
   for (const label of labelList) {
-    const grade = await Grade.findOne({ label }).lean();
-    fromLabels.push({ gradeId: grade?._id || null, gradeLevel: label });
+    const grade = await findGradeByLabel(label);
+    fromLabels.push({ gradeId: grade._id, gradeLevel: grade.label });
   }
 
   const merged = uniqByKey([...fromIds, ...fromLabels], (x) => x.gradeLevel || String(x.gradeId || ""));

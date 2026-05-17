@@ -5,6 +5,7 @@ import * as studentController from "./student.controller.js";
 const router = express.Router();
 
 router.get("/student/classes", requireAuth, restrictTo("student"), studentController.myClasses);
+router.get("/student/lessons", requireAuth, restrictTo("student"), studentController.myLessons);
 router.get("/progress/overview", requireAuth, restrictTo("student"), studentController.progressOverview);
 router.get("/dashboard", requireAuth, restrictTo("student"), studentController.dashboard);
 router.get("/timetable", requireAuth, restrictTo("student"), studentController.timetable);

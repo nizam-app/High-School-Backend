@@ -11,6 +11,7 @@ import Subject from "../subject/subject.model.js";
 import Session from "../session/session.model.js";
 import Profile from "../Profile/profile.model.js";
 import Attendance from "../attendance/attendance.model.js";
+import { buildStudentClassAccessFilter } from "../../utils/studentClassAccess.js";
 
 const toMinutes = (hhmm) => {
   const [h, m] = String(hhmm || "").split(":").map(Number);
@@ -611,30 +612,13 @@ export const replaceClassSchedule = async ({ classId, scheduleInput }) => {
   await cls.save();
   return cls;
 };
-//  get classes by grade + assignedSubjects
+
+//  get all classes assigned to the student (enrollment + grade/subject scope)
 export const getStudentClasses = async (student) => {
-  const subjects = Array.isArray(student.assignedSubjects) ? student.assignedSubjects : [];
-  const subjectIds = Array.isArray(student.assignedSubjectIds) ? student.assignedSubjectIds : [];
+  const classAccessFilter = buildStudentClassAccessFilter(student, student._id);
 
-  const filters = [{ status: "active" }];
-  if (student.gradeLevel || student.gradeId) {
-    const gradeFilter = [];
-    if (student.gradeLevel) gradeFilter.push({ gradeLevel: student.gradeLevel });
-    if (student.gradeId) gradeFilter.push({ gradeId: student.gradeId });
-    filters.push(gradeFilter.length > 1 ? { $or: gradeFilter } : gradeFilter[0]);
-  }
-
-  if (subjects.length || subjectIds.length) {
-    const subjectFilter = [];
-    if (subjects.length) subjectFilter.push({ subject: { $in: subjects } });
-    if (subjectIds.length) subjectFilter.push({ subjectId: { $in: subjectIds } });
-    filters.push(subjectFilter.length > 1 ? { $or: subjectFilter } : subjectFilter[0]);
-  }
-
-  const classes = await ClassModel.find({
-    $and: filters,
-  })
-    .sort({ createdAt: -1 })
+  const classes = await ClassModel.find(classAccessFilter)
+    .sort({ subject: 1, createdAt: -1 })
     .select("_id className subject subjectId gradeLevel gradeId teacher teacherName students schedule status createdAt")
     .populate("teacher", "name")
     .lean();
@@ -642,10 +626,17 @@ export const getStudentClasses = async (student) => {
   const mergedStudentIdsByClass = await resolveStudentIdsByClasses(classes);
 
   const classIds = classes.map((cls) => cls?._id).filter(Boolean);
+  const lessonScopePairs = classes
+    .filter((cls) => cls?.gradeId && cls?.subjectId)
+    .map((cls) => ({ gradeId: cls.gradeId, subjectId: cls.subjectId }));
+
   const [lessons, assignments] = await Promise.all([
-    classIds.length
-      ? Lesson.find({ classId: { $in: classIds }, status: "published" })
-          .select("_id classId title description contentType chapter date status createdAt")
+    lessonScopePairs.length
+      ? Lesson.find({
+          status: "published",
+          $or: lessonScopePairs,
+        })
+          .select("_id classId gradeId subjectId title description contentType chapter date status createdAt")
           .sort({ date: -1, createdAt: -1 })
           .lean()
       : [],
@@ -678,10 +669,15 @@ export const getStudentClasses = async (student) => {
 
   const lessonsByClassId = new Map();
   for (const lesson of lessons) {
-    const key = String(lesson.classId || "").trim();
-    if (!key) continue;
-    if (!lessonsByClassId.has(key)) lessonsByClassId.set(key, []);
-    lessonsByClassId.get(key).push({
+    const lessonGradeId = String(lesson.gradeId || "");
+    const lessonSubjectId = String(lesson.subjectId || "");
+    for (const cls of classes) {
+      if (String(cls.gradeId) !== lessonGradeId || String(cls.subjectId) !== lessonSubjectId) {
+        continue;
+      }
+      const key = String(cls._id);
+      if (!lessonsByClassId.has(key)) lessonsByClassId.set(key, []);
+      lessonsByClassId.get(key).push({
       id: lesson._id,
       title: lesson.title,
       description: lesson.description || "",
@@ -690,7 +686,8 @@ export const getStudentClasses = async (student) => {
       date: lesson.date || null,
       status: lesson.status,
       createdAt: lesson.createdAt,
-    });
+      });
+    }
   }
 
   const assignmentsByClassId = new Map();

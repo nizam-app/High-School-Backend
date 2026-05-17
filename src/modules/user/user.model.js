@@ -49,10 +49,9 @@ const userSchema = new mongoose.Schema(
       default: null,
     },
 
-    // Teacher can teach MULTIPLE grades (e.g., 5th, 6th)
+    // Teacher can teach MULTIPLE grades (labels from Grade collection)
     assignedGrades: {
       type: [String],
-      enum: ["4th", "5th", "6th", "7th"],
       default: [],
       validate: {
         validator: function (grades) {
@@ -72,17 +71,18 @@ const userSchema = new mongoose.Schema(
     },
 
 
-    // Student belongs to ONE grade level only
-    gradeLevel: {
-      type: String,
-      enum: ["4th", "5th", "6th", "7th"],
-      required: function () {
-        return this.role === "student" && !this.gradeId;
-      },
-    },
+    // Student grade — gradeId is the source of truth (Grade collection)
     gradeId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Grade",
+      required: function () {
+        return this.role === "student";
+      },
+      default: null,
+    },
+    gradeLevel: {
+      type: String,
+      trim: true,
       default: null,
     },
 

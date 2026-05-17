@@ -2,12 +2,11 @@ import jwt from "jsonwebtoken";
 import env from "../../config/env.js";
 import AppError from "../../utils/AppError.js";
 import { User } from "../user/user.model.js";
+import { resolveSubjectRef, resolveSubjectRefs } from "../../utils/educationRefs.js";
 import {
-  resolveGradeRef,
-  resolveGradeRefs,
-  resolveSubjectRef,
-  resolveSubjectRefs,
-} from "../../utils/educationRefs.js";
+  resolveStudentGradeFromPayload,
+  resolveTeacherGradesFromPayload,
+} from "../../utils/gradeValidation.js";
 
 const getJwtExpiry = () => {
   const v = String(env.JWT_ACCESS_EXPIRES_IN || "").trim();
@@ -31,7 +30,6 @@ const isPhoneVerifiedValue = (value) => {
   return normalized === "true" || normalized === "1" || normalized === "yes";
 };
 
-const allowedGrades = ["4th", "5th", "6th", "7th"];
 export const isPrivilegedRole = (role) =>
   ["admin", "super_admin", "superadmin"].includes(String(role || "").trim().toLowerCase());
 
@@ -88,28 +86,24 @@ export const registerService = async (payload) => {
   const pin = String(payload?.pin || "").trim();
   const confirmPin = String(payload?.confirmPin || "").trim();
 
-  const {
-    gradeId,
-    gradeLevel,
-  } = await resolveGradeRef({
-    gradeId: payload?.gradeId,
-    gradeLevel: payload?.gradeLevel,
-    required: role === "student",
-  });
+  let gradeId = null;
+  let gradeLevel = "";
+  if (role === "student") {
+    const studentGrade = await resolveStudentGradeFromPayload(payload);
+    gradeId = studentGrade.gradeId;
+    gradeLevel = studentGrade.gradeLevel;
+  }
 
-  const {
-    subjectId,
-    subject,
-  } = await resolveSubjectRef({
+  const { subjectId, subject } = await resolveSubjectRef({
     subjectId: payload?.subjectId,
     subject: payload?.subject,
     required: role === "teacher",
   });
 
-  const { assignedGradeIds, assignedGrades } = await resolveGradeRefs({
-    gradeIds: payload?.assignedGradeIds,
-    gradeLevels: payload?.assignedGrades,
-  });
+  const { assignedGradeIds, assignedGrades } =
+    role === "teacher"
+      ? await resolveTeacherGradesFromPayload(payload)
+      : { assignedGradeIds: [], assignedGrades: [] };
   const { assignedSubjectIds, assignedSubjects } = await resolveSubjectRefs({
     subjectIds: payload?.assignedSubjectIds,
     subjects: payload?.assignedSubjects,
@@ -123,10 +117,7 @@ export const registerService = async (payload) => {
 
   //  Role validations (match your schema)
   if (role === "student") {
-    if (!gradeLevel) throw new AppError("Grade is required for student", 400);
-    if (!allowedGrades.includes(gradeLevel)) {
-      throw new AppError(`Grade must be one of: ${allowedGrades.join(", ")}`, 400);
-    }
+    if (!gradeId) throw new AppError("Selected grade not found", 400);
     if (assignedSubjects.length === 0) {
       throw new AppError("Student must be assigned to at least one subject", 400);
     }
@@ -137,16 +128,12 @@ export const registerService = async (payload) => {
     if (assignedGrades.length === 0) {
       throw new AppError("Teacher must be assigned to at least one grade", 400);
     }
-    for (const g of assignedGrades) {
-      if (!allowedGrades.includes(g)) {
-        throw new AppError(`assignedGrades contains invalid grade: ${g}`, 400);
-      }
-    }
   }
 
   const exists = await User.findOne({ phone });
   if (exists) throw new AppError("Phone already exists", 409);
 
+  // OTP flow disabled — phone verification not required before first login
   // Registration does not require OTP; user must verify phone before first login.
 
   //  Create payload that satisfies schema validators
@@ -156,7 +143,8 @@ export const registerService = async (payload) => {
     phone,
     pin,
     createdVia: "signup",
-    phoneVerified: false,
+    phoneVerified: true,
+    // phoneVerified: false,
   };
 
   if (role === "student") {
@@ -203,13 +191,13 @@ export const loginService = async (payload) => {
   const ok = await user.comparePin(pin);
   if (!ok) throw new AppError("Invalid credentials", 401);
 
-  // All users must verify phone via OTP before they can log in
-  if (!isPhoneVerifiedValue(user.phoneVerified)) {
-    throw new AppError(
-      "Phone number must be verified via OTP before login. Use /otp/send then /otp/verify",
-      403
-    );
-  }
+  // OTP flow disabled — login allowed without phone OTP verification
+  // if (!isPhoneVerifiedValue(user.phoneVerified)) {
+  //   throw new AppError(
+  //     "Phone number must be verified via OTP before login. Use /otp/send then /otp/verify",
+  //     403
+  //   );
+  // }
 
   const token = signAccessToken(user);
 

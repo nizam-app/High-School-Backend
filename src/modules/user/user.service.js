@@ -3,21 +3,33 @@ import User from "./user.model.js";
 import mongoose from "mongoose";
 import AppError from "../../utils/AppError.js";
 import ClassModel from "../class/class.model.js";
+import { resolveSubjectRef, resolveSubjectRefs } from "../../utils/educationRefs.js";
 import {
-  resolveGradeRef,
-  resolveGradeRefs,
-  resolveSubjectRef,
-  resolveSubjectRefs,
-} from "../../utils/educationRefs.js";
+  resolveStudentGradeFromPayload,
+  resolveTeacherGradesFromPayload,
+} from "../../utils/gradeValidation.js";
 
 // small helpers
 const normalizeStr = (v) => String(v || "").trim();
 
 const ALLOWED_ROLES = ["student", "teacher", "admin"];
 const ALLOWED_STATUSES = ["active", "blocked"];
-const ALLOWED_GRADES = ["4th", "5th", "6th", "7th"];
 const ALLOWED_CREATED_VIA = ["signup", "admin"];
 const isValidPin = (pin) => /^\d{4}$/.test(pin);
+
+const assertPinEligibleRole = (role) => {
+  const normalized = normalizeStr(role).toLowerCase();
+  if (!["student", "teacher"].includes(normalized)) {
+    throw new AppError("PIN can only be set for students and teachers", 400);
+  }
+};
+
+const validatePinValue = (pin) => {
+  const normalized = normalizeStr(pin);
+  if (!normalized) throw new AppError("PIN is required", 400);
+  if (!isValidPin(normalized)) throw new AppError("PIN must be exactly 4 digits", 400);
+  return normalized;
+};
 
 const toRoleScopedUser = (doc) => {
   if (!doc) return doc;
@@ -140,11 +152,13 @@ export const adminCreateUser = async (payload) => {
   const phone = normalizeStr(payload?.phone);
   const pin = normalizeStr(payload?.pin);
 
-  const { gradeId, gradeLevel } = await resolveGradeRef({
-    gradeId: payload?.gradeId,
-    gradeLevel: payload?.gradeLevel,
-    required: role === "student",
-  });
+  let gradeId = null;
+  let gradeLevel = "";
+  if (role === "student") {
+    const studentGrade = await resolveStudentGradeFromPayload(payload);
+    gradeId = studentGrade.gradeId;
+    gradeLevel = studentGrade.gradeLevel;
+  }
 
   const { subjectId, subject } = await resolveSubjectRef({
     subjectId: payload?.subjectId,
@@ -152,10 +166,10 @@ export const adminCreateUser = async (payload) => {
     required: role === "teacher",
   });
 
-  const { assignedGradeIds, assignedGrades } = await resolveGradeRefs({
-    gradeIds: payload?.assignedGradeIds,
-    gradeLevels: payload?.assignedGrades,
-  });
+  const { assignedGradeIds, assignedGrades } =
+    role === "teacher"
+      ? await resolveTeacherGradesFromPayload(payload)
+      : { assignedGradeIds: [], assignedGrades: [] };
 
   const { assignedSubjectIds, assignedSubjects } = await resolveSubjectRefs({
     subjectIds: payload?.assignedSubjectIds,
@@ -170,25 +184,12 @@ export const adminCreateUser = async (payload) => {
   if (!pin) throw new AppError("PIN is required", 400);
   if (!isValidPin(pin)) throw new AppError("PIN must be exactly 4 digits", 400);
 
-  if (role === "student") {
-    if (!gradeLevel) throw new AppError("gradeLevel is required for student", 400);
-    if (!ALLOWED_GRADES.includes(gradeLevel)) {
-      throw new AppError(`gradeLevel must be one of: ${ALLOWED_GRADES.join(", ")}`, 400);
-    }
-    // subject assignment is optional for student (assigned later)
+  if (role === "student" && !gradeId) {
+    throw new AppError("Selected grade not found", 400);
   }
 
   if (role === "teacher") {
     if (!subject && !subjectId) throw new AppError("subject is required for teacher", 400);
-
-    // grade assignment optional at create time
-    if (assignedGrades.length > 0) {
-      for (const g of assignedGrades) {
-        if (!ALLOWED_GRADES.includes(g)) {
-          throw new AppError(`assignedGrades contains invalid grade: ${g}`, 400);
-        }
-      }
-    }
   }
 
   // unique phone/email
@@ -236,6 +237,19 @@ export const adminCreateUser = async (payload) => {
   return toRoleScopedUser(user);
 };
 
+export const resetUserPin = async (id, pin) => {
+  if (!mongoose.Types.ObjectId.isValid(id)) throw new AppError("Invalid user id", 400);
+
+  const user = await User.findById(id);
+  if (!user) throw new AppError("User not found", 404);
+
+  assertPinEligibleRole(user.role);
+  user.pin = validatePinValue(pin);
+  await user.save();
+
+  return toRoleScopedUser(user);
+};
+
 export const updateUser = async (id, payload) => {
   if (!mongoose.Types.ObjectId.isValid(id)) throw new AppError("Invalid user id", 400);
 
@@ -261,11 +275,26 @@ export const updateUser = async (id, payload) => {
   if (!ALLOWED_ROLES.includes(nextRole)) throw new AppError("Invalid role", 400);
   update.role = nextRole;
 
-  const gradeRef = await resolveGradeRef({
-    gradeId: payload?.gradeId !== undefined ? payload?.gradeId : existing.gradeId,
-    gradeLevel: payload?.gradeLevel !== undefined ? payload?.gradeLevel : existing.gradeLevel,
-    required: nextRole === "student",
-  });
+  let gradeRef = {
+    gradeId: existing.gradeId,
+    gradeLevel: existing.gradeLevel,
+  };
+  if (nextRole === "student") {
+    const gradePayloadProvided =
+      payload?.gradeId !== undefined ||
+      payload?.gradeLevel !== undefined ||
+      payload?.grade !== undefined;
+
+    if (gradePayloadProvided) {
+      gradeRef = await resolveStudentGradeFromPayload({
+        gradeId: payload?.gradeId ?? existing.gradeId,
+        gradeLevel: payload?.gradeLevel ?? existing.gradeLevel,
+        grade: payload?.grade,
+      });
+    } else if (!existing.gradeId) {
+      throw new AppError("Selected grade not found", 400);
+    }
+  }
 
   const subjectRef = await resolveSubjectRef({
     subjectId: payload?.subjectId !== undefined ? payload?.subjectId : existing.subjectId,
@@ -273,14 +302,23 @@ export const updateUser = async (id, payload) => {
     required: nextRole === "teacher",
   });
 
-  const gradeRefs = await resolveGradeRefs({
-    gradeIds:
-      payload?.assignedGradeIds !== undefined
-        ? payload?.assignedGradeIds
-        : existing.assignedGradeIds,
-    gradeLevels:
-      payload?.assignedGrades !== undefined ? payload?.assignedGrades : existing.assignedGrades,
-  });
+  let gradeRefs = {
+    assignedGradeIds: existing.assignedGradeIds || [],
+    assignedGrades: existing.assignedGrades || [],
+  };
+  if (
+    nextRole === "teacher" &&
+    (payload?.assignedGradeIds !== undefined || payload?.assignedGrades !== undefined)
+  ) {
+    gradeRefs = await resolveTeacherGradesFromPayload({
+      assignedGradeIds:
+        payload?.assignedGradeIds !== undefined
+          ? payload.assignedGradeIds
+          : existing.assignedGradeIds,
+      assignedGrades:
+        payload?.assignedGrades !== undefined ? payload.assignedGrades : existing.assignedGrades,
+    });
+  }
 
   const subjectRefs = await resolveSubjectRefs({
     subjectIds:
@@ -303,12 +341,6 @@ export const updateUser = async (id, payload) => {
       throw new AppError("Teacher must be assigned to at least one grade", 400);
     }
 
-    for (const g of gradeRefs.assignedGrades) {
-      if (!ALLOWED_GRADES.includes(g)) {
-        throw new AppError(`assignedGrades contains invalid grade: ${g}`, 400);
-      }
-    }
-
     update.subject = subjectRef.subject;
     update.subjectId = subjectRef.subjectId || null;
     update.assignedGrades = gradeRefs.assignedGrades;
@@ -322,15 +354,11 @@ export const updateUser = async (id, payload) => {
   }
 
   if (nextRole === "student") {
-    if (!gradeRef.gradeLevel && !gradeRef.gradeId) {
-      throw new AppError("gradeLevel is required for student", 400);
-    }
-    if (!ALLOWED_GRADES.includes(gradeRef.gradeLevel)) {
-      throw new AppError(`gradeLevel must be one of: ${ALLOWED_GRADES.join(", ")}`, 400);
+    if (!gradeRef.gradeId) {
+      throw new AppError("Selected grade not found", 400);
     }
 
-    // subject assignment optional for student
-    update.gradeId = gradeRef.gradeId || null;
+    update.gradeId = gradeRef.gradeId;
     update.gradeLevel = gradeRef.gradeLevel;
     update.assignedSubjectIds = subjectRefs.assignedSubjectIds || [];
     update.assignedSubjects = subjectRefs.assignedSubjects || [];
@@ -364,6 +392,12 @@ export const updateUser = async (id, payload) => {
     if (exists) throw new AppError("Email already exists", 409);
   }
 
+  let pinToSet = null;
+  if (payload?.pin !== undefined) {
+    assertPinEligibleRole(nextRole);
+    pinToSet = validatePinValue(payload.pin);
+  }
+
   const user = await User.findByIdAndUpdate(id, update, {
     new: true,
     runValidators: true,
@@ -377,6 +411,13 @@ export const updateUser = async (id, payload) => {
       assignedSubjectIds: user.assignedSubjectIds || [],
       assignedSubjects: user.assignedSubjects || [],
     });
+  }
+
+  if (pinToSet !== null) {
+    const userDoc = await User.findById(id);
+    userDoc.pin = pinToSet;
+    await userDoc.save();
+    return toRoleScopedUser(userDoc);
   }
 
   return toRoleScopedUser(user);

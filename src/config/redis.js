@@ -27,7 +27,9 @@ export const connectRedis = async () => {
     console.log("Redis connected");
   } catch (err) {
     isConnected = false;
-    console.warn("Redis unavailable. OTP endpoints will return 503 until Redis is up.");
+    // OTP flow disabled
+    // console.warn("Redis unavailable. OTP endpoints will return 503 until Redis is up.");
+    console.warn("Redis unavailable.");
   }
   return redisClient;
 };

@@ -1,7 +1,50 @@
+import mongoose from "mongoose";
 import User from "../user/user.model.js";
 import ClassModel from "../class/class.model.js";
+import { Grade } from "../grade/grade.model.js";
 import AppError from "../../utils/AppError.js";
 import * as userService from "../user/user.service.js";
+import { validateAdminCreateUserPayload } from "./adminUsers.validation.js";
+
+const normalizeStr = (v) => String(v || "").trim();
+const isObjectId = (value) => mongoose.Types.ObjectId.isValid(String(value || ""));
+
+const normalizeAdminUserPayload = (payload = {}) => {
+  const rawGrade = payload.grade;
+  let gradeId = normalizeStr(payload.gradeId || payload.grade_id);
+  let gradeLevel = normalizeStr(payload.gradeLevel || payload.grade_label);
+
+  if (gradeId && !isObjectId(gradeId)) {
+    if (!gradeLevel) gradeLevel = gradeId;
+    gradeId = "";
+  }
+
+  if (!gradeId && isObjectId(rawGrade)) {
+    gradeId = String(rawGrade);
+  } else if (!gradeLevel && rawGrade !== undefined && rawGrade !== null && !isObjectId(rawGrade)) {
+    gradeLevel = normalizeStr(rawGrade);
+  }
+
+  const rawAssigned = payload.assignedGrades ?? payload.assignedGradeIds ?? payload.grades;
+  let assignedGradeIds = payload.assignedGradeIds;
+  let assignedGrades = payload.assignedGrades;
+
+  if (Array.isArray(rawAssigned) && rawAssigned.length > 0) {
+    const ids = rawAssigned.filter((v) => isObjectId(v)).map((v) => String(v));
+    const labels = rawAssigned.filter((v) => !isObjectId(v)).map((v) => normalizeStr(v)).filter(Boolean);
+    if (ids.length) assignedGradeIds = ids;
+    if (labels.length) assignedGrades = labels;
+  }
+
+  return {
+    ...payload,
+    name: payload.name || payload.fullName,
+    gradeId: gradeId || undefined,
+    gradeLevel: gradeLevel || undefined,
+    assignedGradeIds,
+    assignedGrades,
+  };
+};
 
 const toPositiveInt = (value, fallback) => {
   const n = Number(value);
@@ -31,9 +74,11 @@ const buildAssignedClassName = (cls) =>
     .filter(Boolean)
     .join(" - ");
 
-const getVisibleAdminUsersFilter = () => ({
-  $or: [{ createdVia: "admin" }, { phoneVerified: true }],
-});
+// OTP flow disabled — show all users (was: admin-created or OTP-verified only)
+const getVisibleAdminUsersFilter = () => ({});
+// const getVisibleAdminUsersFilter = () => ({
+//   $or: [{ createdVia: "admin" }, { phoneVerified: true }],
+// });
 
 const buildAssignedClassesFromUser = (user) => {
   const role = String(user?.role || "").trim().toLowerCase();
@@ -64,7 +109,8 @@ export const getAdminUsers = async (query = {}) => {
   if (search) {
     const regex = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
     filter.$or = [{ name: regex }, { phone: regex }, { email: regex }];
-    filter.$and = [{ $or: [{ createdVia: "admin" }, { phoneVerified: true }] }];
+    // OTP flow disabled
+    // filter.$and = [{ $or: [{ createdVia: "admin" }, { phoneVerified: true }] }];
   }
 
   const [total, users] = await Promise.all([
@@ -183,11 +229,22 @@ export const getAdminUsersStats = async () => {
   };
 };
 
-export const createAdminUser = async ({ payload, createdBy }) => {
-  const normalized = {
-    ...payload,
-    name: payload?.name || payload?.fullName,
+export const getCreateUserMeta = async () => {
+  const grades = await Grade.find({ isActive: true }).sort({ order: 1, label: 1 }).lean();
+
+  return {
+    grades: grades.map((g) => ({
+      id: g._id,
+      label: g.label,
+      value: String(g._id),
+    })),
+    gradeLabels: grades.map((g) => g.label),
   };
+};
+
+export const createAdminUser = async ({ payload, createdBy }) => {
+  const normalized = normalizeAdminUserPayload(payload);
+  await validateAdminCreateUserPayload(normalized);
 
   return userService.adminCreateUser({
     ...normalized,
@@ -196,11 +253,12 @@ export const createAdminUser = async ({ payload, createdBy }) => {
 };
 
 export const updateAdminUser = async ({ userId, payload }) => {
-  const normalized = {
-    ...payload,
-    name: payload?.name || payload?.fullName,
-  };
+  const normalized = normalizeAdminUserPayload(payload);
   return userService.updateUser(userId, normalized);
+};
+
+export const resetAdminUserPin = async ({ userId, pin }) => {
+  return userService.resetUserPin(userId, pin);
 };
 
 export const updateAdminUserStatus = async ({ userId, status }) => {

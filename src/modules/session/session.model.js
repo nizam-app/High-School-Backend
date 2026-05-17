@@ -14,8 +14,8 @@ const sessionSchema = new mongoose.Schema(
     // Grade Level (required)
     grade: {
       type: String,
-      enum: ["4th", "5th", "6th", "7th"],
       required: [true, "Grade is required"],
+      trim: true,
     },
     gradeId: {
       type: mongoose.Schema.Types.ObjectId,

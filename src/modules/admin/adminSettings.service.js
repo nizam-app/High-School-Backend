@@ -74,7 +74,7 @@ export const updateSecuritySettings = async ({ payload, actorId }) =>
 export const getSettingsSubjectsGrades = async () => {
   const [subjects, grades] = await Promise.all([
     Subject.find().sort({ name: 1 }).lean(),
-    Grade.find().sort({ order: 1 }).lean(),
+    Grade.find().sort({ order: 1, label: 1 }).lean(),
   ]);
 
   return { subjects, grades };

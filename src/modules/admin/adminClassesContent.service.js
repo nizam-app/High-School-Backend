@@ -604,7 +604,7 @@ export const getAdminGradesSections = async (query = {}) => {
   if (onlyActive !== undefined) gradeFilter.isActive = onlyActive;
 
   const [grades, classCountsByGradeId, classCountsByGradeLabel] = await Promise.all([
-    Grade.find(gradeFilter).sort({ order: 1 }).lean(),
+    Grade.find(gradeFilter).sort({ order: 1, label: 1 }).lean(),
     ClassModel.aggregate([
       { $match: { gradeId: { $ne: null } } },
       { $group: { _id: "$gradeId", classCount: { $sum: 1 } } },

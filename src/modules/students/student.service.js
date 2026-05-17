@@ -11,23 +11,28 @@ import {
   getMyAssignmentsForStudent,
   getPendingAssignmentsForStudent,
 } from "../assignment/assignment.service.js";
+import {
+  buildStudentClassAccessFilter,
+  buildStudentPublishedLessonFilter,
+  mapStudentClassSummary,
+} from "../../utils/studentClassAccess.js";
 
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 
 export const getMyClasses = async (studentId) => {
-  const classes = await Class.find({ students: studentId, status: "active" })
-    .populate("teacher", "name role")
+  const sid = String(studentId || "").trim();
+  if (!mongoose.Types.ObjectId.isValid(sid)) return [];
+
+  const student = await User.findById(sid)
+    .select("gradeLevel gradeId assignedSubjects assignedSubjectIds")
     .lean();
 
-  return classes.map((c) => ({
-    classId: c._id,
-    subject: c.subject,
-    gradeLevel: c.gradeLevel,
-    teacher: c.teacher ? { id: c.teacher._id, name: c.teacher.name } : null,
-    studentsCount: c.students?.length || 0,
-    maxStudents: c.maxStudents,
-    status: c.status,
-  }));
+  const classes = await Class.find(buildStudentClassAccessFilter(student, sid))
+    .populate("teacher", "name role")
+    .sort({ subject: 1, createdAt: -1 })
+    .lean();
+
+  return classes.map(mapStudentClassSummary);
 };
 
 export const getStudentProgressOverview = async (studentId) => {
@@ -166,75 +171,44 @@ const minToHHmm = (min) => {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 };
 
-const resolveStudentContentScope = async (student) => {
-  if (!student) {
-    return { gradeId: null, subjectIds: [] };
-  }
+export const getStudentLessons = async (studentId) => {
+  const sid = String(studentId || "").trim();
+  if (!mongoose.Types.ObjectId.isValid(sid)) return [];
 
-  let gradeId = student?.gradeId ? String(student.gradeId) : "";
-  if (!gradeId && student?.gradeLevel) {
-    const gradeDoc = await Grade.findOne({ label: student.gradeLevel }).select("_id").lean();
-    if (gradeDoc?._id) gradeId = String(gradeDoc._id);
-  }
+  const student = await User.findById(sid)
+    .select("gradeLevel gradeId assignedSubjects assignedSubjectIds")
+    .lean();
 
-  const subjectIdSet = new Set(
-    (Array.isArray(student?.assignedSubjectIds) ? student.assignedSubjectIds : [])
-      .map((id) => String(id || "").trim())
-      .filter((id) => mongoose.Types.ObjectId.isValid(id))
-  );
+  const lessonFilter = await buildStudentPublishedLessonFilter(student, sid);
+  const lessons = await Lesson.find(lessonFilter)
+    .select("_id title description chapter contentType createdBy subjectId gradeId createdAt files status")
+    .populate("subjectId", "_id name")
+    .populate("gradeId", "_id label")
+    .populate("createdBy", "_id name role")
+    .sort({ createdAt: -1 })
+    .lean();
 
-  const assignedSubjectNames = Array.isArray(student?.assignedSubjects) ? student.assignedSubjects : [];
-  const normalizedNames = assignedSubjectNames
-    .map((name) => String(name || "").trim().toLowerCase())
-    .filter(Boolean);
-
-  if (normalizedNames.length) {
-    const subjects = await Subject.find({}).select("_id name").lean();
-    for (const subject of subjects) {
-      if (normalizedNames.includes(String(subject?.name || "").trim().toLowerCase())) {
-        subjectIdSet.add(String(subject._id));
-      }
-    }
-  }
-
-  return {
-    gradeId: gradeId && mongoose.Types.ObjectId.isValid(gradeId) ? gradeId : null,
-    subjectIds: Array.from(subjectIdSet),
-  };
-};
-
-const buildStudentClassAccessFilter = (student, studentId) => {
-  const filters = [{ status: "active" }];
-  const explicitEnrollmentFilter = { students: studentId };
-
-  const inferredAndFilters = [];
-  if (student?.gradeLevel || student?.gradeId) {
-    const gradeFilter = [];
-    if (student?.gradeLevel) gradeFilter.push({ gradeLevel: student.gradeLevel });
-    if (student?.gradeId) gradeFilter.push({ gradeId: student.gradeId });
-    if (gradeFilter.length) {
-      inferredAndFilters.push(gradeFilter.length > 1 ? { $or: gradeFilter } : gradeFilter[0]);
-    }
-  }
-
-  const assignedSubjects = Array.isArray(student?.assignedSubjects) ? student.assignedSubjects : [];
-  const assignedSubjectIds = Array.isArray(student?.assignedSubjectIds)
-    ? student.assignedSubjectIds
-    : [];
-  if (assignedSubjects.length || assignedSubjectIds.length) {
-    const subjectFilter = [];
-    if (assignedSubjects.length) subjectFilter.push({ subject: { $in: assignedSubjects } });
-    if (assignedSubjectIds.length) subjectFilter.push({ subjectId: { $in: assignedSubjectIds } });
-    inferredAndFilters.push(subjectFilter.length > 1 ? { $or: subjectFilter } : subjectFilter[0]);
-  }
-
-  filters.push(
-    inferredAndFilters.length > 0
-      ? { $or: [explicitEnrollmentFilter, { $and: inferredAndFilters }] }
-      : explicitEnrollmentFilter
-  );
-
-  return { $and: filters };
+  return lessons.map((lesson) => ({
+    id: lesson._id,
+    title: lesson.title,
+    description: lesson.description || "",
+    chapter: lesson.chapter,
+    contentType: lesson.contentType,
+    status: lesson.status,
+    subject: lesson?.subjectId?.name || null,
+    subjectId: lesson?.subjectId?._id || lesson.subjectId || null,
+    grade: lesson?.gradeId?.label || null,
+    gradeId: lesson?.gradeId?._id || lesson.gradeId || null,
+    createdAt: lesson.createdAt,
+    filesCount: Array.isArray(lesson.files) ? lesson.files.length : 0,
+    createdBy: lesson?.createdBy
+      ? {
+          id: lesson.createdBy._id,
+          name: lesson.createdBy.name,
+          role: lesson.createdBy.role,
+        }
+      : null,
+  }));
 };
 
 export const getStudentDashboard = async (studentId) => {
@@ -255,6 +229,7 @@ export const getStudentDashboard = async (studentId) => {
       recentLessons: [],
       upcomingAssignments: [],
       progressOverview: [],
+      classes: [],
     };
   }
 
@@ -266,16 +241,16 @@ export const getStudentDashboard = async (studentId) => {
 
   const [classes, assignmentsResult, pendingAssignmentsResult, progress] = await Promise.all([
     Class.find(classAccessFilter)
-      .select("_id subject subjectId gradeLevel gradeId teacher schedule")
+      .select(
+        "_id className subject subjectId gradeLevel gradeId teacher teacherName students schedule status maxStudents"
+      )
       .populate("teacher", "name")
+      .sort({ subject: 1, createdAt: -1 })
       .lean(),
     getMyAssignmentsForStudent({ studentId: oid }),
     getPendingAssignmentsForStudent({ studentId: oid }),
     getStudentProgressOverview(oid),
   ]);
-  const { gradeId: scopedGradeId, subjectIds: scopedSubjectIds } =
-    await resolveStudentContentScope(student);
-
   const gradeIdSet = new Set();
   const subjectIdSet = new Set();
   const gradeLevelSet = new Set();
@@ -334,15 +309,7 @@ export const getStudentDashboard = async (studentId) => {
   const completed = assignments.filter((a) => a.myStatus === "graded").length;
 
   const activeLiveSessions = sessions;
-  const lessonFilter = { status: "published" };
-  if (scopedGradeId && scopedSubjectIds.length) {
-    lessonFilter.gradeId = new mongoose.Types.ObjectId(scopedGradeId);
-    lessonFilter.subjectId = {
-      $in: scopedSubjectIds.map((id) => new mongoose.Types.ObjectId(id)),
-    };
-  } else {
-    lessonFilter._id = null;
-  }
+  const lessonFilter = await buildStudentPublishedLessonFilter(student, oid);
 
   const lessons = await Lesson.find(lessonFilter)
     .select("_id title description chapter contentType createdBy subjectId gradeId createdAt files")
@@ -413,9 +380,12 @@ export const getStudentDashboard = async (studentId) => {
         : null,
     }));
 
+  const classSummaries = classes.map(mapStudentClassSummary);
+
   return {
+    classes: classSummaries,
     cards: {
-      enrolledClasses: classes.length,
+      enrolledClasses: classSummaries.length,
       lessons: recentLessons.length,
       assignments: assignmentList.length,
       pendingAssignments,

@@ -8,6 +8,14 @@ const gradeSchema = new mongoose.Schema(
       trim: true,
       unique: true,
     },
+    order: {
+      type: Number,
+      default: 0,
+    },
+    sections: {
+      type: [String],
+      default: [],
+    },
     isActive: {
       type: Boolean,
       default: true,

@@ -13,7 +13,8 @@ import studentRouter from "../modules/students/student.router.js";
 import adminRouter from "../modules/admin/admin.router.js";
 import teacherRouter from "../modules/Teacher/teacher.router.js";
 import attendanceRouter from "../modules/attendance/attendance.router.js";
-import otpRouter from "../modules/otp/otp.router.js";
+// OTP flow disabled
+// import otpRouter from "../modules/otp/otp.router.js";
 import smsRouter from "../modules/sms/sms.router.js";
 import notificationRouter from "../modules/notification/notification.router.js";
 
@@ -23,7 +24,10 @@ import notificationRouter from "../modules/notification/notification.router.js";
 const router = Router();
 
 router.get("/health", (req, res) => {
-  res.send("API is healthy");
+  res.json({
+    status: "ok",
+    grades: "database-driven",
+  });
 });
 
 router.use("/auth", authRouter);
@@ -40,7 +44,7 @@ router.use("/students", studentRouter);
 router.use("/teachers", teacherRouter);
 router.use("/attendance", attendanceRouter);
 router.use("/admin", adminRouter);
-router.use("/otp", otpRouter);
+// router.use("/otp", otpRouter);
 router.use("/sms", smsRouter);
 router.use("/notifications", notificationRouter);
 

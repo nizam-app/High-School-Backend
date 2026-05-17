@@ -113,10 +113,14 @@ const parseScheduledFor = (value, required = false) => {
 
 const computeRate = (part, total) => (total > 0 ? Math.round((part / total) * 100) : 0);
 
+// OTP flow disabled — all active users visible (was: admin-created or OTP-verified only)
 const buildUserVisibilityFilter = () => ({
   status: "active",
-  $or: [{ createdVia: "admin" }, { phoneVerified: true }],
 });
+// const buildUserVisibilityFilter = () => ({
+//   status: "active",
+//   $or: [{ createdVia: "admin" }, { phoneVerified: true }],
+// });
 
 const resolveTargetUsers = async ({ targetType, target }) => {
   const visibleFilter = buildUserVisibilityFilter();

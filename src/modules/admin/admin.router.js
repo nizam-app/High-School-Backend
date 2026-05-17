@@ -5,8 +5,10 @@ import { makeUploader } from "../../middlewares/upload.js";
 import {
   createUser,
   deleteUser,
+  getCreateUserMeta,
   getUsers,
   getUsersStats,
+  resetUserPin,
   updateUser,
   updateUserStatus,
 } from "./adminUsers.controller.js";
@@ -80,9 +82,11 @@ router.use("/settings/theme", themeSettingsRouter);
 
 router.get("/dashboard/overview", requireAuth, restrictTo("admin"), getDashboardOverview);
 router.get("/users/stats", requireAuth, restrictTo("admin"), getUsersStats);
+router.get("/users/create-meta", requireAuth, restrictTo("admin"), getCreateUserMeta);
 router.get("/users", requireAuth, restrictTo("admin"), getUsers);
 router.post("/users", requireAuth, restrictTo("admin"), createUser);
 router.patch("/users/:id/status", requireAuth, restrictTo("admin"), updateUserStatus);
+router.patch("/users/:id/pin", requireAuth, restrictTo("admin"), resetUserPin);
 router.patch("/users/:id", requireAuth, restrictTo("admin"), updateUser);
 router.delete("/users/:id", requireAuth, restrictTo("admin"), deleteUser);
 
