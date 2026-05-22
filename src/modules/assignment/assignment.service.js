@@ -15,6 +15,20 @@ const POPULATE_SCOPE = [
   { path: "createdBy", select: "_id name role" },
 ];
 
+const resolveRefId = (ref) => {
+  if (ref == null) return null;
+  if (typeof ref === "object" && ref._id != null) return String(ref._id);
+  return String(ref);
+};
+
+const teacherOwnsAssignment = (assignment, teacherId) => {
+  const tid = String(teacherId);
+  return (
+    resolveRefId(assignment.createdBy) === tid ||
+    resolveRefId(assignment.classInfo?.teacher) === tid
+  );
+};
+
 const pickLatestSubmissionPerAssignment = (submissions = []) => {
   const latestMap = new Map();
   for (const s of submissions) {
@@ -480,7 +494,7 @@ export const getAssignmentDetailsForStudent = async ({ assignmentId, studentId }
 export const getTeacherSubmissions = async ({ assignmentId, teacherId }) => {
   const assignment = await Assignment.findById(assignmentId).populate(POPULATE_SCOPE).lean();
   if (!assignment) throw new AppError("Assignment not found", 404);
-  if (String(assignment.createdBy) !== String(teacherId)) {
+  if (!teacherOwnsAssignment(assignment, teacherId)) {
     throw new AppError("You are not allowed to view submissions for this assignment", 403);
   }
 
