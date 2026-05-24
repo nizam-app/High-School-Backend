@@ -7,6 +7,13 @@ import Grade from "../grade/grade.model.js";
 import Subject from "../subject/subject.model.js";
 import ClassModel from "../class/class.model.js";
 import { buildStoredFileMetaList } from "../../utils/fileStorage.js";
+import {
+  buildStudentAssignmentFilter,
+  buildStudentAssignmentFilterForScope,
+  buildStudentClassScopeContext,
+  resolveRefId,
+  studentCanAccessAssignment,
+} from "../../utils/studentClassAccess.js";
 
 const norm = (v) => String(v || "").trim().toLowerCase();
 const POPULATE_SCOPE = [
@@ -14,12 +21,6 @@ const POPULATE_SCOPE = [
   { path: "subjectId", select: "_id name" },
   { path: "createdBy", select: "_id name role" },
 ];
-
-const resolveRefId = (ref) => {
-  if (ref == null) return null;
-  if (typeof ref === "object" && ref._id != null) return String(ref._id);
-  return String(ref);
-};
 
 const teacherOwnsAssignment = (assignment, teacherId) => {
   const tid = String(teacherId);
@@ -58,45 +59,20 @@ const getStudentAssignmentStatus = (submission) => {
   return { myStatus: "pending", myGrade: null };
 };
 
-const resolveStudentAssignmentScope = async (studentId) => {
-  const student = await User.findById(studentId)
-    .select("role gradeId gradeLevel assignedSubjectIds assignedSubjects")
-    .lean();
-  if (!student || student.role !== "student") throw new AppError("Student not found", 404);
-
-  let gradeDoc = null;
-  if (student?.gradeId) {
-    gradeDoc = await Grade.findById(student.gradeId).select("_id label").lean();
-  }
-  if (!gradeDoc && student?.gradeLevel) {
-    gradeDoc = await Grade.findOne({ label: student.gradeLevel }).select("_id label").lean();
-  }
-
-  const subjectIdSet = new Set(
-    (Array.isArray(student?.assignedSubjectIds) ? student.assignedSubjectIds : [])
-      .map((id) => String(id || "").trim())
-      .filter((id) => mongoose.Types.ObjectId.isValid(id))
-  );
-
-  const assignedSubjectNames = Array.isArray(student?.assignedSubjects)
-    ? student.assignedSubjects
+const attachStudentSubmissionStatus = async (assignments, studentId) => {
+  const ids = assignments.map((a) => a._id);
+  const submissions = ids.length
+    ? await Submission.find({ assignmentId: { $in: ids }, studentId })
+        .select("assignmentId grade submittedAt status")
+        .lean()
     : [];
-  const normalizedAssignedNames = assignedSubjectNames.map(norm).filter(Boolean);
+  const subMap = pickLatestSubmissionPerAssignment(submissions);
 
-  if (normalizedAssignedNames.length) {
-    const subjects = await Subject.find({}).select("_id name").lean();
-    for (const subject of subjects) {
-      if (normalizedAssignedNames.includes(norm(subject.name))) {
-        subjectIdSet.add(String(subject._id));
-      }
-    }
-  }
-
-  return {
-    student,
-    gradeDoc,
-    allowedSubjectIds: Array.from(subjectIdSet),
-  };
+  return assignments.map((a) => {
+    const sub = subMap.get(String(a._id));
+    const { myStatus, myGrade } = getStudentAssignmentStatus(sub);
+    return { ...a, myStatus, myGrade };
+  });
 };
 
 const normalizeStudentAssignmentFilterStatus = (status) => {
@@ -221,28 +197,6 @@ const resolveClassForScope = async ({ teacherId, gradeId, subjectId }) => {
     .lean();
 };
 
-const assertStudentScopeAccess = async ({ gradeId, subjectId, studentId }) => {
-  const { student, gradeDoc, allowedSubjectIds } = await resolveStudentAssignmentScope(studentId);
-  const { grade, subject } = await getScopeDocs({ gradeId, subjectId });
-  const gradeMatches =
-    (gradeDoc?._id && String(gradeDoc._id) === String(grade._id)) ||
-    norm(student.gradeLevel) === norm(grade.label);
-  if (!gradeMatches) {
-    throw new AppError("This assignment is not for your grade", 403);
-  }
-
-  const subjectMatches =
-    allowedSubjectIds.includes(String(subject._id)) ||
-    (Array.isArray(student.assignedSubjects) ? student.assignedSubjects : [])
-      .map(norm)
-      .includes(norm(subject.name));
-  if (!subjectMatches) {
-    throw new AppError("You are not assigned to this subject", 403);
-  }
-
-  return { student, grade, subject };
-};
-
 // Teacher create assignment by gradeId + subjectId
 export const createAssignmentFromForm = async ({ teacherId, payload, files }) => {
   const title = String(getField(payload, "title") || "").trim();
@@ -322,78 +276,47 @@ export const createAssignmentFromForm = async ({ teacherId, payload, files }) =>
 export const getClassAssignmentsForStudent = async ({ gradeId, subjectId, studentId }) => {
   const gId = parseObjectId(gradeId, "gradeId");
   const sId = parseObjectId(subjectId, "subjectId");
-  await assertStudentScopeAccess({ gradeId: gId, subjectId: sId, studentId });
-
-  const assignments = await Assignment.find({
+  const assignmentFilter = await buildStudentAssignmentFilterForScope(null, studentId, {
     gradeId: gId,
     subjectId: sId,
-    status: { $ne: "draft" },
-  })
+  });
+
+  const assignments = await Assignment.find(assignmentFilter)
     .populate(POPULATE_SCOPE)
     .sort({ dueAt: 1 })
     .lean();
 
-  const ids = assignments.map((a) => a._id);
-  const submissions = await Submission.find({ assignmentId: { $in: ids }, studentId })
-    .select("assignmentId grade submittedAt status")
-    .lean();
-  const subMap = pickLatestSubmissionPerAssignment(submissions);
-
-  return assignments.map((a) => {
-    const sub = subMap.get(String(a._id));
-    const { myStatus, myGrade } = getStudentAssignmentStatus(sub);
-    return { ...a, myStatus, myGrade };
-  });
+  return attachStudentSubmissionStatus(assignments, studentId);
 };
 
 export const getMyAssignmentsForStudent = async ({ studentId, status }) => {
-  const { student, gradeDoc, allowedSubjectIds } = await resolveStudentAssignmentScope(studentId);
   const statusFilter = normalizeStudentAssignmentFilterStatus(status);
+  const { studentDoc, scopePairs } = await buildStudentClassScopeContext(null, studentId);
 
-  if (!gradeDoc) {
-    return {
-      data: [],
-      meta: {
-        studentGrade: student.gradeLevel,
-        studentSubjects: student.assignedSubjects || [],
-        matchedAssignmentCount: 0,
-        statusFilter,
-      },
-    };
+  if (!studentDoc) throw new AppError("Student not found", 404);
+
+  const emptyMeta = {
+    studentGrade: studentDoc.gradeLevel,
+    studentSubjects: studentDoc.assignedSubjects || [],
+    matchedAssignmentCount: 0,
+    statusFilter,
+  };
+
+  if (!scopePairs.length) {
+    return { data: [], meta: emptyMeta };
   }
 
-  if (!allowedSubjectIds.length) {
-    return {
-      data: [],
-      meta: {
-        studentGrade: student.gradeLevel,
-        studentSubjects: student.assignedSubjects || [],
-        matchedAssignmentCount: 0,
-        statusFilter,
-      },
-    };
+  const assignmentFilter = await buildStudentAssignmentFilter(null, studentId);
+  if (assignmentFilter._id === null) {
+    return { data: [], meta: emptyMeta };
   }
 
-  const assignments = await Assignment.find({
-    gradeId: gradeDoc._id,
-    subjectId: { $in: allowedSubjectIds },
-    status: { $ne: "draft" },
-  })
+  const assignments = await Assignment.find(assignmentFilter)
     .populate(POPULATE_SCOPE)
     .sort({ dueAt: 1 })
     .lean();
 
-  const ids = assignments.map((a) => a._id);
-  const submissions = await Submission.find({ assignmentId: { $in: ids }, studentId })
-    .select("assignmentId grade submittedAt status")
-    .lean();
-  const subMap = pickLatestSubmissionPerAssignment(submissions);
-
-  const mappedAssignments = assignments.map((a) => {
-    const sub = subMap.get(String(a._id));
-    const { myStatus, myGrade } = getStudentAssignmentStatus(sub);
-    return { ...a, myStatus, myGrade };
-  });
+  const mappedAssignments = await attachStudentSubmissionStatus(assignments, studentId);
   const now = new Date();
   const data = statusFilter
     ? mappedAssignments.filter((assignment) => {
@@ -406,8 +329,8 @@ export const getMyAssignmentsForStudent = async ({ studentId, status }) => {
   return {
     data,
     meta: {
-      studentGrade: student.gradeLevel,
-      studentSubjects: student.assignedSubjects || [],
+      studentGrade: studentDoc.gradeLevel,
+      studentSubjects: studentDoc.assignedSubjects || [],
       matchedAssignmentCount: data.length,
       statusFilter,
     },
@@ -419,54 +342,35 @@ export const getPendingAssignmentsForStudent = async ({ studentId }) => {
 };
 
 export const getPendingAssignmentsForStudentGrade = async ({ studentId }) => {
-  const student = await User.findById(studentId).select("role gradeId gradeLevel").lean();
-  if (!student || student.role !== "student") throw new AppError("Student not found", 404);
+  const { studentDoc } = await buildStudentClassScopeContext(null, studentId);
+  if (!studentDoc) throw new AppError("Student not found", 404);
 
-  let gradeId = student?.gradeId ? String(student.gradeId) : "";
-  if (!gradeId && student?.gradeLevel) {
-    const gradeDoc = await Grade.findOne({ label: student.gradeLevel }).select("_id label").lean();
-    if (gradeDoc?._id) gradeId = String(gradeDoc._id);
-  }
-
-  if (!gradeId) {
+  const assignmentFilter = await buildStudentAssignmentFilter(null, studentId);
+  if (assignmentFilter._id === null) {
     return {
       data: [],
       meta: {
-        studentGrade: student.gradeLevel || null,
+        studentGrade: studentDoc.gradeLevel || null,
         pendingAssignmentCount: 0,
       },
     };
   }
 
-  const assignments = await Assignment.find({
-    gradeId,
-    status: { $ne: "draft" },
-  })
+  const assignments = await Assignment.find(assignmentFilter)
     .populate(POPULATE_SCOPE)
     .sort({ dueAt: 1 })
     .lean();
 
-  const ids = assignments.map((a) => a._id);
-  const submissions = await Submission.find({ assignmentId: { $in: ids }, studentId })
-    .select("assignmentId grade submittedAt status")
-    .lean();
-  const subMap = pickLatestSubmissionPerAssignment(submissions);
-
-  const pendingAssignments = assignments
-    .map((a) => {
-      const sub = subMap.get(String(a._id));
-      const { myStatus, myGrade } = getStudentAssignmentStatus(sub);
-      return { ...a, myStatus, myGrade };
-    })
-    .filter(
-      (assignment) =>
-        assignment.myStatus === "pending" && shouldKeepPendingAssignment(assignment, new Date())
-    );
+  const mappedAssignments = await attachStudentSubmissionStatus(assignments, studentId);
+  const pendingAssignments = mappedAssignments.filter(
+    (assignment) =>
+      assignment.myStatus === "pending" && shouldKeepPendingAssignment(assignment, new Date())
+  );
 
   return {
     data: pendingAssignments,
     meta: {
-      studentGrade: student.gradeLevel || null,
+      studentGrade: studentDoc.gradeLevel || null,
       pendingAssignmentCount: pendingAssignments.length,
     },
   };
@@ -477,11 +381,11 @@ export const getAssignmentDetailsForStudent = async ({ assignmentId, studentId }
   const assignment = await Assignment.findById(assignmentId).populate(POPULATE_SCOPE).lean();
   if (!assignment) throw new AppError("Assignment not found", 404);
 
-  await assertStudentScopeAccess({
-    gradeId: assignment.gradeId?._id || assignment.gradeId,
-    subjectId: assignment.subjectId?._id || assignment.subjectId,
-    studentId,
-  });
+  const context = await buildStudentClassScopeContext(null, studentId);
+  if (!context.studentDoc) throw new AppError("Student not found", 404);
+  if (!studentCanAccessAssignment(assignment, context)) {
+    throw new AppError("This assignment is not available for your class", 403);
+  }
 
   const submission = await Submission.findOne({ assignmentId, studentId })
     .sort({ submittedAt: -1 })

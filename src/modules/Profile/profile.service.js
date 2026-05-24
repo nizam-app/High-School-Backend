@@ -3,9 +3,14 @@ import AppError from "../../utils/AppError.js";
 import User from "../user/user.model.js";
 import Profile from "./profile.model.js";
 import ClassModel from "../class/class.model.js";
+import { buildStudentClassAccessFilterForStudent, buildStudentAssignmentFilter } from "../../utils/studentClassAccess.js";
 import { Assignment } from "../assignment/assignment.model.js";
 import { Submission } from "../submisssion/submission.model.js";
-import Attendance from "../attendance/attendance.model.js";
+import {
+  calculateStudentAssignmentAttendance,
+  isGradedStudentSubmission,
+  pickLatestSubmissionPerAssignment,
+} from "../../utils/studentAssignmentAttendance.js";
 const USER_PROFILE_SELECT = "role name email phone status createdVia";
 
 const normalizeStr = (v) => String(v || "").trim();
@@ -111,72 +116,20 @@ const toClientProfile = (profileDoc) => {
   return obj;
 };
 
-const pickLatestSubmissionPerAssignment = (submissions = []) => {
-  const latestMap = new Map();
-  for (const submission of submissions) {
-    const key = String(submission.assignmentId);
-    const existing = latestMap.get(key);
-    if (
-      !existing ||
-      new Date(submission.submittedAt || submission.createdAt || 0) >
-        new Date(existing.submittedAt || existing.createdAt || 0)
-    ) {
-      latestMap.set(key, submission);
-    }
-  }
-  return latestMap;
-};
-
 const buildStudentProfileOverview = async (user) => {
   const studentId = user._id;
+  const classFilter = await buildStudentClassAccessFilterForStudent(user, studentId);
 
-  const classFilters = [{ status: "active" }];
-  const explicitEnrollmentFilter = { students: studentId };
-  const inferredAndFilters = [];
-
-  if (user?.gradeLevel || user?.gradeId) {
-    const gradeFilter = [];
-    if (user?.gradeLevel) gradeFilter.push({ gradeLevel: user.gradeLevel });
-    if (user?.gradeId) gradeFilter.push({ gradeId: user.gradeId });
-    if (gradeFilter.length) {
-      inferredAndFilters.push(gradeFilter.length > 1 ? { $or: gradeFilter } : gradeFilter[0]);
-    }
-  }
-
-  const assignedSubjects = Array.isArray(user?.assignedSubjects) ? user.assignedSubjects : [];
-  const assignedSubjectIds = Array.isArray(user?.assignedSubjectIds) ? user.assignedSubjectIds : [];
-  if (assignedSubjects.length || assignedSubjectIds.length) {
-    const subjectFilter = [];
-    if (assignedSubjects.length) subjectFilter.push({ subject: { $in: assignedSubjects } });
-    if (assignedSubjectIds.length) subjectFilter.push({ subjectId: { $in: assignedSubjectIds } });
-    inferredAndFilters.push(subjectFilter.length > 1 ? { $or: subjectFilter } : subjectFilter[0]);
-  }
-
-  classFilters.push(
-    inferredAndFilters.length > 0
-      ? { $or: [explicitEnrollmentFilter, { $and: inferredAndFilters }] }
-      : explicitEnrollmentFilter
-  );
-
-  const classes = await ClassModel.find({ $and: classFilters })
+  const classes = await ClassModel.find(classFilter)
     .select("_id subject gradeLevel teacher")
     .populate("teacher", "name")
     .lean();
 
-  const classIds = classes.map((cls) => cls._id);
-  const assignments = await Assignment.find({
-    status: { $ne: "draft" },
-    $or: classIds.length
-      ? [{ classId: { $in: classIds } }]
-      : [
-          {
-            gradeId: user.gradeId || null,
-            subjectId: { $in: assignedSubjectIds.length ? assignedSubjectIds : [] },
-          },
-        ],
-  })
-    .select("_id points")
-    .lean();
+  const assignmentFilter = await buildStudentAssignmentFilter(user, studentId);
+  const assignments =
+    assignmentFilter._id === null
+      ? []
+      : await Assignment.find(assignmentFilter).select("_id points").lean();
 
   const assignmentIds = assignments.map((assignment) => assignment._id);
   const submissions = assignmentIds.length
@@ -196,33 +149,18 @@ const buildStudentProfileOverview = async (user) => {
     const submission = latestSubs.get(String(assignment._id));
     if (!submission) continue;
     completedAssignments += 1;
-    if (submission?.grade?.gradedAt) {
+    if (isGradedStudentSubmission(submission)) {
       totalScore += Number(submission.grade?.score || 0);
       totalPoints += Number(assignment.points || 0);
     }
   }
   const averageGrade = totalPoints > 0 ? Math.round((totalScore / totalPoints) * 100) : 0;
 
-  const attendanceSheets = classIds.length
-    ? await Attendance.find({
-        classId: { $in: classIds },
-        "records.studentId": studentId,
-      })
-        .select("records")
-        .lean()
-    : [];
-  let presentLike = 0;
-  let attendanceTotal = 0;
-  for (const sheet of attendanceSheets) {
-    for (const record of Array.isArray(sheet?.records) ? sheet.records : []) {
-      if (String(record?.studentId) !== String(studentId)) continue;
-      attendanceTotal += 1;
-      if (record?.status === "Present" || record?.status === "Late") {
-        presentLike += 1;
-      }
-    }
-  }
-  const attendance = attendanceTotal > 0 ? Math.round((presentLike / attendanceTotal) * 100) : 0;
+  const {
+    attendancePercentage: attendance,
+    gradedSubmittedAssignments,
+    totalAssignedAssignments,
+  } = calculateStudentAssignmentAttendance(assignments, latestSubs);
 
   return {
     academicOverview: {
@@ -230,6 +168,8 @@ const buildStudentProfileOverview = async (user) => {
       assignments: `${completedAssignments}/${assignments.length}`,
       averageGrade,
       attendance,
+      gradedSubmittedAssignments,
+      totalAssignedAssignments,
     },
     currentClasses: classes.map((cls) => ({
       classId: cls._id,

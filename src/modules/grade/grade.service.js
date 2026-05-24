@@ -4,8 +4,6 @@ import User from "../user/user.model.js";
 import ClassModel from "../class/class.model.js";
 import Session from "../session/session.model.js";
 import TimetableSlot from "../timetable/timetableSlot.model.js";
-import { Lesson } from "../lessons/lesson.model.js";
-import { Assignment } from "../assignment/assignment.model.js";
 import AppError from "../../utils/AppError.js";
 
 const normalizeStr = (v) => String(v || "").trim();
@@ -40,22 +38,17 @@ const syncGradeLabelReferences = async ({ gradeId, oldLabel, newLabel }) => {
   );
 };
 
-const assertGradeNotInUse = async (grade) => {
+const assertGradeCanBeDeleted = async (grade) => {
   const gradeId = grade._id;
   const label = grade.label;
-  const [students, teachers, classes, sessions, lessons, assignments] = await Promise.all([
-    User.countDocuments({ $or: [{ gradeId }, { gradeLevel: label }] }),
-    User.countDocuments({ $or: [{ assignedGradeIds: gradeId }, { assignedGrades: label }] }),
-    ClassModel.countDocuments({ $or: [{ gradeId }, { gradeLevel: label }] }),
-    Session.countDocuments({ $or: [{ gradeId }, { grade: label }] }),
-    Lesson.countDocuments({ gradeId }),
-    Assignment.countDocuments({ gradeId }),
-  ]);
+  const activeClassCount = await ClassModel.countDocuments({
+    status: "active",
+    $or: [{ gradeId }, { gradeLevel: label }],
+  });
 
-  const total = students + teachers + classes + sessions + lessons + assignments;
-  if (total > 0) {
+  if (activeClassCount > 0) {
     throw new AppError(
-      "Grade is in use and cannot be deleted. Set isActive to false instead.",
+      `This grade has ${activeClassCount} active class(es). Delete or archive those classes first.`,
       400
     );
   }
@@ -150,7 +143,7 @@ export const deleteGrade = async (id) => {
   const grade = await Grade.findById(id);
   if (!grade) throw new AppError("Grade not found", 404);
 
-  await assertGradeNotInUse(grade);
+  await assertGradeCanBeDeleted(grade);
 
   await Grade.findByIdAndDelete(id);
   return grade;

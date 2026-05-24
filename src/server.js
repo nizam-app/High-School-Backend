@@ -20,6 +20,7 @@ import {
   startSessionStatusCron,
   stopSessionStatusCron,
 } from "./crons/sessionStatusCron.js";
+import { archiveOrphanActiveClasses } from "./utils/studentClassAccess.js";
 
 const DEFAULT_PORT = Number(env.PORT) || 5000;
 const host = env.HOST || "0.0.0.0";
@@ -123,6 +124,7 @@ process.once("SIGTERM", () => void gracefulShutdown("SIGTERM"));
 const start = async () => {
   try {
     await connectDB();
+    await archiveOrphanActiveClasses();
     // OTP flow disabled — Redis used for OTP signup/session state
     // await connectRedis();
     await Class.syncIndexes();

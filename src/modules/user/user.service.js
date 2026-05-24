@@ -426,12 +426,17 @@ export const updateUser = async (id, payload) => {
 export const deleteUser = async (id) => {
   if (!mongoose.Types.ObjectId.isValid(id)) throw new AppError("Invalid user id", 400);
 
-  const user = await User.findByIdAndDelete(id);
+  const user = await User.findById(id);
   if (!user) throw new AppError("User not found", 404);
 
-  // cleanup class memberships
+  if (user.role === "teacher") {
+    await ClassModel.updateMany({ teacher: id }, { $set: { status: "archived" } });
+  }
+
+  await User.findByIdAndDelete(id);
+
+  // cleanup class memberships for deleted students
   await ClassModel.updateMany({ students: id }, { $pull: { students: id } });
-  await ClassModel.updateMany({ teacher: id }, { $unset: { teacher: "" } });
 
   return toRoleScopedUser(user);
 };

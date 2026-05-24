@@ -1,32 +1,18 @@
 import AppError from "../../utils/AppError.js";
 import { Submission } from "./submission.model.js";
 import { Assignment } from "../assignment/assignment.model.js";
-import User from "../user/user.model.js";
-import Grade from "../grade/grade.model.js";
-import Subject from "../subject/subject.model.js";
+import {
+  buildStudentAssignmentFilter,
+  buildStudentClassScopeContext,
+  studentCanAccessAssignment,
+} from "../../utils/studentClassAccess.js";
 import { buildStoredFileMeta } from "../../utils/fileStorage.js";
 
-const norm = (v) => String(v || "").trim().toLowerCase();
-
-const assertStudentCanAccessAssignmentScope = async ({ gradeId, subjectId, studentId }) => {
-  const [grade, subject, student] = await Promise.all([
-    Grade.findById(gradeId).lean(),
-    Subject.findById(subjectId).lean(),
-    User.findById(studentId).select("role gradeLevel assignedSubjects").lean(),
-  ]);
-
-  if (!grade) throw new AppError("Grade not found", 404);
-  if (!subject) throw new AppError("Subject not found", 404);
-  if (!student || student.role !== "student") throw new AppError("Student not found", 404);
-
-  const gradeOk = norm(student.gradeLevel) === norm(grade.label);
-  const subjects = Array.isArray(student.assignedSubjects) ? student.assignedSubjects : [];
-  const subjectOk = subjects.map(norm).includes(norm(subject.name));
-  if (!(gradeOk && subjectOk)) {
-    throw new AppError(
-      `Access denied. studentGrade=${student.gradeLevel || "N/A"}, assignmentGrade=${grade.label || "N/A"}, assignmentSubject=${subject.name || "N/A"}, studentSubjects=${subjects.join("|") || "none"}`,
-      403
-    );
+const assertStudentCanAccessAssignment = async (assignment, studentId) => {
+  const context = await buildStudentClassScopeContext(null, studentId);
+  if (!context.studentDoc) throw new AppError("Student not found", 404);
+  if (!studentCanAccessAssignment(assignment, context)) {
+    throw new AppError("This assignment is not available for your class", 403);
   }
 };
 
@@ -35,11 +21,7 @@ export const submitAssignment = async ({ assignmentId, studentId, file, textAnsw
   if (!assignment) throw new AppError("Assignment not found", 404);
   if (assignment.status === "closed") throw new AppError("Assignment is closed", 400);
 
-  await assertStudentCanAccessAssignmentScope({
-    gradeId: assignment.gradeId,
-    subjectId: assignment.subjectId,
-    studentId,
-  });
+  await assertStudentCanAccessAssignment(assignment, studentId);
 
   // late rules
   const now = new Date();
@@ -132,12 +114,23 @@ export const gradeSubmission = async ({ submissionId, graderId, score, feedback 
 
 // Student view my submission (grade + feedback)
 export const getMySubmission = async ({ assignmentId, studentId }) => {
+  const assignment = await Assignment.findById(assignmentId).lean();
+  if (!assignment) throw new AppError("Assignment not found", 404);
+  await assertStudentCanAccessAssignment(assignment, studentId);
+
   return Submission.findOne({ assignmentId, studentId }).sort({ submittedAt: -1 }).lean();
 };
 
 export const getMyPendingSubmissions = async ({ studentId }) => {
-  return Submission.find({ studentId, status: "pending" })
-    .populate("assignmentId", "_id title dueAt points gradeId subjectId")
+  const assignmentFilter = await buildStudentAssignmentFilter(null, studentId);
+  if (assignmentFilter._id === null) return [];
+
+  const inScopeAssignments = await Assignment.find(assignmentFilter).select("_id").lean();
+  const assignmentIds = inScopeAssignments.map((a) => a._id);
+  if (!assignmentIds.length) return [];
+
+  return Submission.find({ studentId, status: "pending", assignmentId: { $in: assignmentIds } })
+    .populate("assignmentId", "_id title dueAt points gradeId subjectId classId")
     .sort({ submittedAt: -1, createdAt: -1 })
     .lean();
 };

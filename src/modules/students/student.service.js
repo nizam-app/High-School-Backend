@@ -12,10 +12,16 @@ import {
   getPendingAssignmentsForStudent,
 } from "../assignment/assignment.service.js";
 import {
-  buildStudentClassAccessFilter,
+  buildStudentClassAccessFilterForStudent,
   buildStudentPublishedLessonFilter,
+  buildStudentAssignmentFilter,
   mapStudentClassSummary,
 } from "../../utils/studentClassAccess.js";
+import { Assignment } from "../assignment/assignment.model.js";
+import {
+  calculateStudentAssignmentAttendance,
+  pickLatestSubmissionPerAssignment,
+} from "../../utils/studentAssignmentAttendance.js";
 
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 
@@ -27,7 +33,7 @@ export const getMyClasses = async (studentId) => {
     .select("gradeLevel gradeId assignedSubjects assignedSubjectIds")
     .lean();
 
-  const classes = await Class.find(buildStudentClassAccessFilter(student, sid))
+  const classes = await Class.find(await buildStudentClassAccessFilterForStudent(student, sid))
     .populate("teacher", "name role")
     .sort({ subject: 1, createdAt: -1 })
     .lean();
@@ -38,7 +44,69 @@ export const getMyClasses = async (studentId) => {
 export const getStudentProgressOverview = async (studentId) => {
   const sid = String(studentId || "").trim();
   if (!mongoose.Types.ObjectId.isValid(sid)) {
-    return { overview: [], summary: { averagePercentage: 0, subjectsCount: 0, gradedAssignments: 0 } };
+    return {
+      overview: [],
+      summary: {
+        averagePercentage: 0,
+        subjectsCount: 0,
+        gradedAssignments: 0,
+        attendancePercentage: 0,
+        gradedSubmittedAssignments: 0,
+        totalAssignedAssignments: 0,
+      },
+    };
+  }
+
+  const assignmentFilter = await buildStudentAssignmentFilter(null, sid);
+  let inScopeAssignmentIds = [];
+  if (assignmentFilter._id !== null) {
+    const scopedAssignments = await Assignment.find(assignmentFilter).select("_id").lean();
+    inScopeAssignmentIds = scopedAssignments.map((row) => row._id);
+  }
+
+  const attendanceAssignments = inScopeAssignmentIds.map((id) => ({ _id: id }));
+  let attendanceStats = {
+    attendancePercentage: 0,
+    gradedSubmittedAssignments: 0,
+    totalAssignedAssignments: 0,
+  };
+
+  if (inScopeAssignmentIds.length) {
+    const attendanceSubmissions = await Submission.find({
+      studentId: sid,
+      assignmentId: { $in: inScopeAssignmentIds },
+    })
+      .select("assignmentId submittedAt createdAt grade status")
+      .lean();
+    attendanceStats = calculateStudentAssignmentAttendance(
+      attendanceAssignments,
+      pickLatestSubmissionPerAssignment(attendanceSubmissions)
+    );
+  }
+
+  if (!inScopeAssignmentIds.length) {
+    const student = await User.findById(sid).select("assignedSubjects").lean();
+    const assigned = Array.isArray(student?.assignedSubjects)
+      ? student.assignedSubjects.map((s) => String(s || "").trim()).filter(Boolean)
+      : [];
+    const overview = assigned.map((subject) => ({
+      subject,
+      totalScore: 0,
+      totalPoints: 0,
+      gradedCount: 0,
+      percentage: 0,
+    }));
+    return {
+      overview,
+      summary: {
+        averagePercentage: 0,
+        subjectsCount: overview.length,
+        gradedAssignments: 0,
+        attendancePercentage: attendanceStats.attendancePercentage,
+        gradedSubmittedAssignments: attendanceStats.gradedSubmittedAssignments,
+        totalAssignedAssignments: attendanceStats.totalAssignedAssignments,
+      },
+    };
   }
 
   const [student, rows] = await Promise.all([
@@ -47,6 +115,7 @@ export const getStudentProgressOverview = async (studentId) => {
       {
         $match: {
           studentId: new mongoose.Types.ObjectId(sid),
+          assignmentId: { $in: inScopeAssignmentIds },
           "grade.score": { $ne: null },
         },
       },
@@ -158,6 +227,9 @@ export const getStudentProgressOverview = async (studentId) => {
       averagePercentage,
       subjectsCount: overview.length,
       gradedAssignments,
+      attendancePercentage: attendanceStats.attendancePercentage,
+      gradedSubmittedAssignments: attendanceStats.gradedSubmittedAssignments,
+      totalAssignedAssignments: attendanceStats.totalAssignedAssignments,
     },
   };
 };
@@ -237,7 +309,7 @@ export const getStudentDashboard = async (studentId) => {
   const student = await User.findById(oid)
     .select("gradeLevel gradeId assignedSubjects assignedSubjectIds")
     .lean();
-  const classAccessFilter = buildStudentClassAccessFilter(student, oid);
+  const classAccessFilter = await buildStudentClassAccessFilterForStudent(student, oid);
 
   const [classes, assignmentsResult, pendingAssignmentsResult, progress] = await Promise.all([
     Class.find(classAccessFilter)
@@ -423,7 +495,7 @@ export const getStudentTimetable = async (studentId) => {
     .select("gradeLevel gradeId assignedSubjects assignedSubjectIds")
     .lean();
 
-  const classes = await Class.find(buildStudentClassAccessFilter(student, sid))
+  const classes = await Class.find(await buildStudentClassAccessFilterForStudent(student, sid))
     .select("_id subject gradeLevel teacher schedule")
     .populate("teacher", "name")
     .lean();

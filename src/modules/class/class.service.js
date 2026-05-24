@@ -11,7 +11,7 @@ import Subject from "../subject/subject.model.js";
 import Session from "../session/session.model.js";
 import Profile from "../Profile/profile.model.js";
 import Attendance from "../attendance/attendance.model.js";
-import { buildStudentClassAccessFilter } from "../../utils/studentClassAccess.js";
+import { buildStudentClassAccessFilterForStudent } from "../../utils/studentClassAccess.js";
 
 const toMinutes = (hhmm) => {
   const [h, m] = String(hhmm || "").split(":").map(Number);
@@ -37,6 +37,17 @@ const getStudentAssignmentStatus = (submission) => {
 };
 
 const normalize = (v) => String(v || "").trim().toLowerCase();
+
+const mapStoredAttachments = (items = []) =>
+  (Array.isArray(items) ? items : [])
+    .map((item) => ({
+      originalName: item?.originalName || null,
+      mimeType: item?.mimeType || null,
+      size: item?.size ?? null,
+      storageKey: item?.storageKey || null,
+      url: item?.url || null,
+    }))
+    .filter((item) => item.url || item.storageKey || item.originalName);
 
 const resolveStudentIdsByClasses = async (classes = []) => {
   if (!Array.isArray(classes) || classes.length === 0) return new Map();
@@ -310,7 +321,7 @@ export const getClassById = async (classId, requester = null) => {
       subjectId: cls.subjectId || null,
       $or: [{ classId }, { classId: null }, { classId: { $exists: false } }],
     })
-      .select("_id classId title description contentType chapter date status createdAt")
+      .select("_id classId title description contentType chapter date status files createdAt")
       .sort({ date: -1, createdAt: -1 })
       .lean(),
     Assignment.find({
@@ -320,7 +331,7 @@ export const getClassById = async (classId, requester = null) => {
       $or: [{ classId }, { classId: null }, { classId: { $exists: false } }],
       status: { $ne: "draft" },
     })
-      .select("_id classId title description dueAt points status createdAt")
+      .select("_id classId title description dueAt points status attachments createdAt")
       .sort({ dueAt: 1, createdAt: -1 })
       .lean(),
     Session.find({
@@ -496,6 +507,7 @@ export const getClassById = async (classId, requester = null) => {
       chapter: lesson.chapter,
       date: lesson.date || null,
       status: lesson.status,
+      attachments: mapStoredAttachments(lesson.files),
       createdAt: lesson.createdAt,
     })),
     assignmentDetails: assignments.map((assignment) => ({
@@ -506,6 +518,7 @@ export const getClassById = async (classId, requester = null) => {
       dueAt: assignment.dueAt,
       points: assignment.points,
       status: assignment.status,
+      attachments: mapStoredAttachments(assignment.attachments),
       createdAt: assignment.createdAt,
     })),
     liveSessionDetails: sessions.map((session) => ({
@@ -615,7 +628,7 @@ export const replaceClassSchedule = async ({ classId, scheduleInput }) => {
 
 //  get all classes assigned to the student (enrollment + grade/subject scope)
 export const getStudentClasses = async (student) => {
-  const classAccessFilter = buildStudentClassAccessFilter(student, student._id);
+  const classAccessFilter = await buildStudentClassAccessFilterForStudent(student, student._id);
 
   const classes = await ClassModel.find(classAccessFilter)
     .sort({ subject: 1, createdAt: -1 })
@@ -636,13 +649,13 @@ export const getStudentClasses = async (student) => {
           status: "published",
           $or: lessonScopePairs,
         })
-          .select("_id classId gradeId subjectId title description contentType chapter date status createdAt")
+          .select("_id classId gradeId subjectId title description contentType chapter date status files createdAt")
           .sort({ date: -1, createdAt: -1 })
           .lean()
       : [],
     classIds.length
       ? Assignment.find({ classId: { $in: classIds }, status: { $ne: "draft" } })
-          .select("_id classId title description dueAt points status createdAt")
+          .select("_id classId title description dueAt points status attachments createdAt")
           .sort({ dueAt: 1, createdAt: -1 })
           .lean()
       : [],
@@ -685,6 +698,7 @@ export const getStudentClasses = async (student) => {
       chapter: lesson.chapter,
       date: lesson.date || null,
       status: lesson.status,
+      attachments: mapStoredAttachments(lesson.files),
       createdAt: lesson.createdAt,
       });
     }
@@ -705,6 +719,7 @@ export const getStudentClasses = async (student) => {
       dueAt: assignment.dueAt,
       points: assignment.points,
       status: assignment.status,
+      attachments: mapStoredAttachments(assignment.attachments),
       myStatus,
       myGrade,
       createdAt: assignment.createdAt,
@@ -714,7 +729,10 @@ export const getStudentClasses = async (student) => {
   return classes.map((cls) => ({
     ...cls,
     teacher: cls?.teacher?._id || cls?.teacher || null,
-    teacherName: String(cls?.teacherName || cls?.teacher?.name || "").trim() || null,
+    teacherName:
+      cls?.teacher && typeof cls.teacher === "object" && cls.teacher.name
+        ? String(cls.teacher.name).trim()
+        : null,
     students: Array.from(mergedStudentIdsByClass.get(String(cls._id)) || []),
     totalStudents: Number(mergedStudentIdsByClass.get(String(cls._id))?.size || 0),
     lessonDetails: lessonsByClassId.get(String(cls._id)) || [],
