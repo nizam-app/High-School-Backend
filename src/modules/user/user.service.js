@@ -320,15 +320,22 @@ export const updateUser = async (id, payload) => {
     });
   }
 
+  const hasSubjectIdsInPayload = payload?.assignedSubjectIds !== undefined;
+  const hasSubjectNamesInPayload = payload?.assignedSubjects !== undefined;
+
+  let subjectIdsInput;
+  let subjectNamesInput;
+  if (hasSubjectIdsInPayload || hasSubjectNamesInPayload) {
+    subjectIdsInput = hasSubjectIdsInPayload ? payload.assignedSubjectIds : [];
+    subjectNamesInput = hasSubjectNamesInPayload ? payload.assignedSubjects : [];
+  } else {
+    subjectIdsInput = existing.assignedSubjectIds;
+    subjectNamesInput = existing.assignedSubjects;
+  }
+
   const subjectRefs = await resolveSubjectRefs({
-    subjectIds:
-      payload?.assignedSubjectIds !== undefined
-        ? payload?.assignedSubjectIds
-        : existing.assignedSubjectIds,
-    subjects:
-      payload?.assignedSubjects !== undefined
-        ? payload?.assignedSubjects
-        : existing.assignedSubjects,
+    subjectIds: subjectIdsInput,
+    subjects: subjectNamesInput,
   });
 
   if (nextRole === "teacher") {
