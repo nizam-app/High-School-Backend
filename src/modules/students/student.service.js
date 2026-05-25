@@ -240,7 +240,7 @@ const toDayKey = (date = new Date()) =>
 const minToHHmm = (min) => {
   const h = Math.floor(Number(min || 0) / 60);
   const m = Number(min || 0) % 60;
-  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+  return `${String(h).padStart(2, "0")}h${String(m).padStart(2, "0")}`;
 };
 
 export const getStudentLessons = async (studentId) => {
