@@ -16,12 +16,53 @@ const assertStudentCanAccessAssignment = async (assignment, studentId) => {
   }
 };
 
+// Returns the latest submission for (assignment, student), or null.
+const findLatestSubmission = (assignmentId, studentId) =>
+  Submission.findOne({ assignmentId, studentId })
+    .sort({ submittedAt: -1, createdAt: -1 })
+    .lean();
+
+// Returns true if the student already has a graded submission for this assignment.
+const hasGradedSubmission = async (assignmentId, studentId) => {
+  const graded = await Submission.exists({
+    assignmentId,
+    studentId,
+    status: "graded",
+  });
+  return !!graded;
+};
+
+// Compute whether the student is allowed to resubmit right now.
+const computeCanResubmit = ({ assignment, latestSubmission }) => {
+  if (!assignment) return false;
+  if (assignment.status === "closed") return false;
+
+  if (latestSubmission?.status === "graded") return false;
+
+  if (assignment.dueAt) {
+    const isLate = new Date() > new Date(assignment.dueAt);
+    if (isLate && !assignment.lateAllowed) return false;
+  }
+
+  return true;
+};
+
 export const submitAssignment = async ({ assignmentId, studentId, file, textAnswer }) => {
   const assignment = await Assignment.findById(assignmentId).lean();
   if (!assignment) throw new AppError("Assignment not found", 404);
   if (assignment.status === "closed") throw new AppError("Assignment is closed", 400);
 
   await assertStudentCanAccessAssignment(assignment, studentId);
+
+  // Once the teacher has graded any prior submission, the student cannot
+  // resubmit. Resubmission is only allowed while the latest submission is
+  // still pending/submitted (not graded).
+  if (await hasGradedSubmission(assignmentId, studentId)) {
+    throw new AppError(
+      "Your submission has already been graded by the teacher and cannot be resubmitted",
+      400
+    );
+  }
 
   // late rules
   const now = new Date();
@@ -118,7 +159,18 @@ export const getMySubmission = async ({ assignmentId, studentId }) => {
   if (!assignment) throw new AppError("Assignment not found", 404);
   await assertStudentCanAccessAssignment(assignment, studentId);
 
-  return Submission.findOne({ assignmentId, studentId }).sort({ submittedAt: -1 }).lean();
+  const latestSubmission = await findLatestSubmission(assignmentId, studentId);
+  const isGraded = latestSubmission?.status === "graded";
+  const canResubmit = computeCanResubmit({ assignment, latestSubmission });
+
+  return {
+    submission: latestSubmission,
+    isGraded,
+    canResubmit,
+    assignmentStatus: assignment.status,
+    dueAt: assignment.dueAt || null,
+    lateAllowed: !!assignment.lateAllowed,
+  };
 };
 
 export const getMyPendingSubmissions = async ({ studentId }) => {
