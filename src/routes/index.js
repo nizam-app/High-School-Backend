@@ -37,6 +37,7 @@ router.use("/assignments", assignmentRouter);
 router.use("/sessions", sessionRouter);
 router.use('/classes', classsRouter)
 router.use('/submission', submissionRouter)
+router.use('/submissions', submissionRouter) // plural alias (REST convention)
 router.use("/profiles", profileRouter);
 router.use("/subjects", subjectRouter);
 router.use("/grades", gradeRouter);
